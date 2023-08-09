@@ -19,10 +19,12 @@ class KustoBackend(TextQueryBackend):
         self,
         processing_pipeline: Optional[ProcessingPipeline] = None,
         collect_errors: bool = False,
+        table_name : str = None,
         raw_field : str = None,
     ):
         super().__init__(processing_pipeline, collect_errors)
 
+        self.table_name = table_name
         if not raw_field:
             raise RuntimeError("The backend option `raw_field` must be set")
 
@@ -64,7 +66,7 @@ class KustoBackend(TextQueryBackend):
     field_escape_pattern : ClassVar[Pattern] = re.compile("\\s")   # All matches of this pattern are prepended with the string contained in field_escape.
 
     ## Values
-    str_quote       : ClassVar[str] = '"'     # string quoting character (added as escaping character)
+    str_quote       : ClassVar[str] = "'"     # string quoting character (added as escaping character)
     escape_char     : ClassVar[str] = "\\"    # Escaping character for special characrers inside string
     wildcard_multi  : ClassVar[str] = "*"     # Character used as multi-character wildcard
     wildcard_single : ClassVar[str] = "*"     # Character used as single-character wildcard
@@ -155,8 +157,11 @@ class KustoBackend(TextQueryBackend):
     # TODO: implement custom methods for query elements not covered by the default backend base.
     # Documentation: https://sigmahq-pysigma.readthedocs.io/en/latest/Backends.html
 
+    # Name of table to search in
+    table_name : Optional[str] = None
+
     # Field that contains raw log message, to match keyword conditions against
-    raw_field : Optional[str] = None
+    raw_field : str = None
 
     def escape_and_quote_field(self, field_name : str):
         quoted_field = super().escape_and_quote_field(field_name)
@@ -167,3 +172,48 @@ class KustoBackend(TextQueryBackend):
             quoted_field = "[" + quoted_field + "]"
 
         return quoted_field
+
+    def wrap_query(self, query : str) -> str:
+        if self.table_name:
+            query = f"{self.table_name} | where {query}"
+
+        return query
+
+    def rule_to_tactics(self, rule: SigmaRule) -> List[str]:
+        tactic_labels = {
+            'reconnaissance': "Reconnaissance",
+            'resource_development': "Resource Development",
+            'initial_access': "Initial Access",
+            'execution': "Execution",
+            'persistence': "Persistence",
+            'privilege_escalation': "Privilege Escalation",
+            'defense_evasion': "Defense Evasion",
+            'credential_access': "Credential Access",
+            'discovery': "Discovery",
+            'lateral_movement': "Lateral Movement",
+            'collection': "Collection",
+            'command_and_control': "Command and Control",
+            'exfiltration': "Exfiltration",
+            'impact': "Impact",
+        }
+
+        tactics = []
+        for tag in rule.tags:
+            if tag.namespace == "attack" and tag.name in tactic_labels:
+                name = tactic_labels[tag.name]
+                if not name in tactics:
+                    tactics.append(name)
+
+        return tactics
+
+    def finalize_query_default(self, rule: SigmaRule, query: str, index: int, state: ConversionState) -> str:
+        return self.wrap_query(query)
+
+    def finalize_query_json(self, rule: SigmaRule, query: str, index: int, state: ConversionState) -> Dict:
+        out = rule.to_dict()
+        out['query'] = self.wrap_query(query)
+        out['tactics'] = self.rule_to_tactics(rule)
+        return out
+
+    def finalize_output_json(self, queries: List[Dict]) -> List[Dict]:
+        return queries
